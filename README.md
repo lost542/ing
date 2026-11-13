@@ -29,22 +29,26 @@ git remote add origin https://github.com/<你的用户名>/github-trending-daily
 git push -u origin main
 ```
 
-### 2. 配置邮箱密钥（Secrets）
+### 2. 开通 163 邮箱的 SMTP 服务，拿到授权码
 
-以 QQ 邮箱为例：网页登录 QQ 邮箱 → 设置 → 账号 → 开启「IMAP/SMTP 服务」
-→ 按提示获取 **授权码**（不是 QQ 密码）。
+1. 网页登录 https://mail.163.com → 顶部 **设置** → **POP3/SMTP/IMAP**
+2. 开启 **IMAP/SMTP 服务**（发送邮件用这个）
+3. 按提示用手机发短信验证，然后会给你一个 **16 位授权码**（一串字母）
+   ⚠️ 这是"客户端授权密码"，**不是**你的 163 登录密码；只显示一次，记下来
 
-然后打开你的仓库页面 → **Settings → Secrets and variables → Actions → New repository secret**，添加以下 5 个 secret：
+### 3. 配置仓库 Secrets（5 个）
 
-| Secret 名 | 值 | 示例 |
-|---|---|---|
-| `SMTP_HOST` | 你的邮箱服务商 SMTP 地址 | `smtp.qq.com`（QQ）/ `smtp.163.com`（163）/ `smtp.gmail.com`（Gmail） |
-| `SMTP_PORT` | 端口 | `465`（SSL，推荐） |
-| `SMTP_USER` | 发件邮箱 | `xxxx@qq.com` |
-| `SMTP_PASS` | SMTP 授权码 | `abcdefghijklmnop` |
-| `TO_EMAIL` | 收件邮箱 | `xxxx@qq.com`（可填同一个邮箱） |
+打开你的仓库页面 → **Settings → Secrets and variables → Actions → New repository secret**，依次添加（名字必须完全一致，全大写）：
 
-### 3. 启用 Actions 并手动测试
+| Secret 名 | 值 |
+|---|---|
+| `SMTP_HOST` | `smtp.163.com` |
+| `SMTP_PORT` | `465` |
+| `SMTP_USER` | 你的 163 邮箱地址，如 `xxxx@163.com` |
+| `SMTP_PASS` | 刚拿到的 16 位授权码 |
+| `TO_EMAIL` | 收件邮箱（填你常用的邮箱，可以是同一个 163，也可以是 QQ 等其他邮箱） |
+
+### 4. 启用 Actions 并手动测试
 
 - 仓库 → **Actions** 标签页 → 如果提示 enable workflows，点启用
 - 左侧选 "GitHub Trending Daily Digest" → **Run workflow** → 手动跑一次
