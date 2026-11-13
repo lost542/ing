@@ -175,10 +175,13 @@ def send_email(text: str, html: str):
     msg.attach(MIMEText(text, "plain", "utf-8"))
     msg.attach(MIMEText(html, "html", "utf-8"))
 
+    # local_hostname 固定为 ASCII 域名，避免中文主机名导致 EHLO 编码报错
     if SMTP_PORT == 465:
-        server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30)
+        server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30,
+                                  local_hostname="localhost")
     else:
-        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30,
+                              local_hostname="localhost")
         server.starttls()
     server.login(SMTP_USER, SMTP_PASS)
     server.sendmail(SMTP_USER, [TO_EMAIL], msg.as_string())
