@@ -189,16 +189,22 @@ def send_email(text: str, html: str):
 
 
 def main():
+    # 幂等保护：workflow 每天会触发多次（防 GitHub 丢运行），当天已发过就不再重复发
+    archive = f"digests/{TODAY}.md"
+    if os.path.exists(archive) and not os.environ.get("FORCE_SEND"):
+        print(f"今天（{TODAY}）的日报已发送过，跳过本次。")
+        return
+
     repos = collect_repos()
     if not repos:
         print("今天没有抓到项目，跳过发送")
         return
     text, html = build_digest(repos)
-    # 日报同时写进仓库归档（Actions 会把它 commit 回去）
-    os.makedirs("digests", exist_ok=True)
-    with open(f"digests/{TODAY}.md", "w", encoding="utf-8") as f:
-        f.write(text)
     send_email(text, html)
+    # 发送成功后再写归档文件，确保归档 = 已发送
+    os.makedirs("digests", exist_ok=True)
+    with open(archive, "w", encoding="utf-8") as f:
+        f.write(text)
     print(f"✅ 日报已发送至 {TO_EMAIL}，共 {len(repos)} 个项目")
 
 
