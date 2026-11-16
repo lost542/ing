@@ -1,0 +1,43 @@
+name: LLM Probe (one-shot)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  models: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe GitHub Models
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request, urllib.error
+          tok = os.environ["GITHUB_TOKEN"]
+          payload = {
+              "model": "openai/gpt-4.1-mini",
+              "messages": [{"role": "user", "content": "用中文回复四个字：模型可用"}],
+              "temperature": 0.2,
+              "max_tokens": 20,
+          }
+          req = urllib.request.Request(
+              "https://models.github.ai/inference/chat/completions",
+              data=json.dumps(payload).encode(),
+              headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"},
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  body = r.read().decode()
+                  print("HTTP", r.status, "CT", r.headers.get("Content-Type"))
+                  print("BODY", body[:400])
+                  d = json.loads(body)
+                  print("PARSED_OK", d["choices"][0]["message"]["content"].strip())
+          except urllib.error.HTTPError as e:
+              print("HTTPERR", e.code, e.read()[:300])
+          except Exception as e:
+              print("FAIL", type(e).__name__, e)
+          PY
