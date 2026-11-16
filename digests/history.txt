@@ -1,0 +1,22 @@
+# 手工维护的「已推荐过」清单（一行一个 owner/repo）
+# 用途：补上聊天里发过、但当天归档被脚本版本覆盖掉的日报，避免同一项目短期内重复出现。
+# 11-15 日报（手写中文版）
+backnotprop/plannotator
+GoogleChrome/modern-web-guidance-src
+JuliusBrussee/caveman
+tradermonty/claude-trading-skills
+ashhart/TensorFold
+Tencent/LoopForge
+Likely7/Veyra-NRVideo
+Goblinmine/homelab-diagram
+tangerineturtle1/NX2navi
+adriadam10/mkw-recomp
+# 11-14 日报
+huamidev/GestaltX
+jhaizhou-ops/S2Arm
+Kianuni/Erosion-CN
+apex-compute/ANR
+HybridRobotics/supermimic
+agentes-chat/agentes-chat
+FrigadeHQ/yogurt
+HolyArrs/HolyArrs

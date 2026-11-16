@@ -43,15 +43,16 @@ SEND_AFTER_HOUR = int(os.environ.get("SEND_AFTER_HOUR", "9"))
 # 注意：环境变量拿到的是字符串，"false" 在 Python 里也是真值，必须显式解析
 FORCE_SEND = os.environ.get("FORCE_SEND", "").strip().lower() in ("1", "true", "yes", "on")
 
-# LLM（默认 GitHub Models，Actions 里用 GITHUB_TOKEN 免密调用）
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://models.github.ai/inference").rstrip("/")
-LLM_MODEL = os.environ.get("LLM_MODEL", "openai/gpt-4.1-mini")
-LLM_API_KEY = (os.environ.get("LLM_API_KEY")
-               or os.environ.get("GITHUB_TOKEN")
-               or os.environ.get("GH_TOKEN")
-               or "")
+# LLM：任意 OpenAI 兼容接口（DeepSeek / 硅基流动 / OpenAI / 自建网关均可）
+# 注意：GitHub Models（models.github.ai）实测在 Actions 内只返回纯文本 "OK"，
+# 无法真正生成内容，因此不再默认走它；没配 key 时自动降级为中文数据版日报。
+LLM_BASE_URL = (os.environ.get("LLM_BASE_URL") or "").rstrip("/")
+LLM_MODEL = os.environ.get("LLM_MODEL") or "deepseek-chat"
+LLM_API_KEY = os.environ.get("LLM_API_KEY") or ""
 
 MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "9"))
+# star 超过这个数的当作「老牌巨无霸」，不再占日报篇幅
+MAX_TOTAL_STARS = int(os.environ.get("MAX_TOTAL_STARS", "50000"))
 
 BJT = timezone(timedelta(hours=8))
 NOW = datetime.now(BJT)
@@ -81,16 +82,34 @@ EVERGREEN = {
 }
 
 TAG_RULES = [
-    ("AI / Agent", ["ai", "agent", "llm", "gpt", "model", "inference", "rag",
-                    "assistant", "copilot", "chatbot", "prompt", "mcp",
-                    "transformer", "embedding", "claude", "openai", "skill"]),
-    ("好玩 / 有趣", ["game", "emulator", "retro", "remake", "pixel", "3d",
-                    "visual", "art", "music", "animation", "toy", "fun",
-                    "hack", "hardware", "raspberry", "recreation", "meme"]),
-    ("开发工具 / 效率", ["cli", "tool", "extension", "editor", "plugin",
-                       "productivity", "automation", "devtool", "terminal",
-                       "workflow", "launcher", "manager", "monitor", "diagram"]),
+    ("AI / Agent", ["ai", "agent", "agents", "llm", "gpt", "model", "inference",
+                    "rag", "assistant", "copilot", "chatbot", "prompt", "mcp", "skill",
+                    "skills", "transformer", "embedding", "claude", "openai", "deepseek",
+                    "diffusion", "multimodal", "vector"]),
+    ("好玩 / 有趣", ["game", "games", "emulator", "retro", "remake", "recomp", "pixel",
+                    "3d", "visual", "art", "music", "animation", "toy", "fun", "meme",
+                    "playground", "shader", "webgl", "webgpu", "creative", "generative",
+                    "simulation", "underwater"]),
+    ("开发工具 / 效率", ["cli", "tool", "tools", "extension", "editor", "plugin", "sdk",
+                       "productivity", "automation", "devtool", "terminal", "workflow",
+                       "launcher", "manager", "monitor", "diagram", "review", "lint",
+                       "debug", "deploy", "self-hosted", "serverless", "gui", "canvas",
+                       "library", "api", "proxy", "scheduler"]),
 ]
+
+TAG_HINT = {
+    "AI / Agent": "属于 AI / Agent 方向，关注模型应用与智能体工具链的人可以跟进。",
+    "开发工具 / 效率": "属于开发工具 / 效率方向，解决的是日常开发或运维里的具体摩擦。",
+    "好玩 / 有趣": "属于好玩 / 有趣方向，偏创意、可视化或体验层面的项目。",
+    "综合 / 其他": "暂未归入明确方向，可以按 README 自行判断是否符合你的口味。",
+}
+
+
+def _kw_hit(kw, text):
+    """短英文关键词按词边界匹配，避免 "ai" 命中 available 这类误判。"""
+    if re.fullmatch(r"[a-z0-9+#.\- ]+", kw):
+        return re.search(rf"(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])", text) is not None
+    return kw in text
 
 
 # ---------------------------------------------------------------- 小工具
@@ -106,6 +125,10 @@ def norm(text):
 
 def http_json(url, payload=None, headers=None, timeout=60):
     hdrs = {"User-Agent": "trending-daily-bot", "Accept": "application/vnd.github+json"}
+    # 调 GitHub API 时带上 token，避免 60 次/小时的匿名限流（Actions 内是 5000 次/小时）
+    gh_token = os.environ.get("GH_API_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
+    if gh_token and "api.github.com" in url:
+        hdrs["Authorization"] = f"Bearer {gh_token}"
     hdrs.update(headers or {})
     data = None
     if payload is not None:
@@ -130,25 +153,35 @@ def fetch_trending():
 
     repos = []
     for block in html.split("<article")[1:]:
-        m = re.search(r'<h2[^>]*>\s*<a href="/([^"/]+/[^"]+?)"', block)
-        if not m:
+        # GitHub 会给 <a> 加 data-hydro-click 之类的跟踪属性，href 不再紧跟 <a，
+        # 所以先在 <h2> 里取仓库链接，别依赖属性顺序。
+        h2 = re.search(r"<h2[^>]*>(.*?)</h2>", block, re.S)
+        name = re.search(r'href="/([\w.\-]+/[\w.\-]+)"', h2.group(1)) if h2 else None
+        if not name:
             continue
-        full = m.group(1)
+        full = name.group(1)
         if full.count("/") != 1:
             continue
-        desc = re.search(r"<p class=\"[^\"]*\"[^>]*>(.*?)</p>", block, re.S)
+        desc = re.search(r'<p[^>]*class="[^"]*col-9[^"]*"[^>]*>(.*?)</p>', block, re.S)
         lang = re.search(r'itemprop="programmingLanguage">([^<]+)<', block)
-        total = re.search(rf'href="/{re.escape(full)}/stargazers"[^>]*>\s*([\d,]+)', block)
+        star = re.search(rf'href="/{re.escape(full)}/stargazers"[^>]*>(.*?)</a>', block, re.S)
+        stars = 0
+        if star:
+            digits = re.sub(r"[^0-9]", "", re.sub(r"<[^>]+>", "", star.group(1)))
+            stars = int(digits) if digits else 0
         today = re.search(r"([\d,]+)\s+stars?\s+today", block)
         repos.append({
             "full_name": full,
             "description": norm(re.sub(r"<[^>]+>", "", desc.group(1))) if desc else "",
             "language": norm(lang.group(1)) if lang else "",
-            "stars": int(total.group(1).replace(",", "")) if total else 0,
+            "stars": stars,
             "stars_today": int(today.group(1).replace(",", "")) if today else 0,
             "url": f"https://github.com/{full}",
             "topics": [],
+            "created": "",
         })
+    if not repos:
+        print("⚠️ trending 解析到 0 条，页面结构可能又变了", file=sys.stderr)
     return repos
 
 
@@ -172,22 +205,24 @@ def fetch_new_repos(days=7):
             "stars_today": 0,
             "url": r["html_url"],
             "topics": r.get("topics") or [],
+            "created": (r.get("created_at") or "")[:10],
         })
     return out
 
 
 def recent_digest_names():
-    """最近几天已经推荐过的项目，避免重复。"""
+    """最近几天已经推荐过的项目，避免重复（归档 md + 手工历史清单）。"""
     seen = set()
     if not os.path.isdir(DIGEST_DIR):
         return seen
-    for fn in sorted(os.listdir(DIGEST_DIR)):
-        if not fn.endswith(".md") or fn == f"{TODAY}.md":
-            continue
+    files = [fn for fn in sorted(os.listdir(DIGEST_DIR))
+             if (fn.endswith(".md") and fn != f"{TODAY}.md") or fn == "history.txt"]
+    for fn in files:
         try:
             with open(os.path.join(DIGEST_DIR, fn), encoding="utf-8") as f:
                 for line in f:
-                    m = re.search(r"https://github\.com/([\w.\-]+/[\w.\-]+)", line)
+                    m = re.search(r"https://github\.com/([\w.\-]+/[\w.\-]+)", line) \
+                        or re.match(r"\s*([\w.\-]+/[\w.\-]+)\s*$", line)
                     if m:
                         seen.add(m.group(1).lower())
         except OSError:
@@ -197,13 +232,20 @@ def recent_digest_names():
 
 def collect():
     seen = recent_digest_names()
-    picked, used = [], set()
+    picked, used, used_desc = [], set(), set()
 
     def add(repo):
         key = repo["full_name"].lower()
         if key in used or key in seen or key in EVERGREEN:
             return
+        if repo.get("stars", 0) >= MAX_TOTAL_STARS:
+            return
+        # 同日克隆去重：描述前缀相同的一律只留第一个（GitHub 上克隆潮很常见）
+        desc_key = norm(repo.get("description")).lower()[:60]
+        if desc_key and desc_key in used_desc:
+            return
         used.add(key)
+        used_desc.add(desc_key)
         picked.append(repo)
 
     # 今天的日榜优先（有「今日 +N」这个增长信号）
@@ -223,21 +265,46 @@ def collect():
 
 # ---------------------------------------------------------------- 中文解读
 def rule_tag(repo):
-    text = ((repo.get("description") or "") + " " + " ".join(repo.get("topics") or [])).lower()
+    """按 主题 / 仓库名 / 描述 三个权重打分，取最高分，避免关键词一撞就误判方向。"""
+    name = repo.get("full_name", "").replace("/", " ").replace("-", " ").replace("_", " ").lower()
+    desc = (repo.get("description") or "").lower()
+    topics = " ".join(repo.get("topics") or []).lower()
+
+    best_tag, best_score, tie = "综合 / 其他", 0, False
     for tag, kws in TAG_RULES:
-        if any(k in text for k in kws):
-            return tag
-    return "综合 / 其他"
+        score = 0
+        for k in kws:
+            if topics and _kw_hit(k, topics):
+                score += 3
+            if _kw_hit(k, name):
+                score += 2
+            if _kw_hit(k, desc):
+                score += 1
+        if score > best_score:
+            best_tag, best_score, tie = tag, score, False
+        elif score == best_score and score > 0:
+            tie = True
+    # 分数太低或并列，就老实归到「其他」，不硬塞方向
+    if best_score < 2 or tie:
+        return "综合 / 其他"
+    return best_tag
 
 
 def fallback_notes(repo):
-    desc = repo.get("description") or ""
-    if len(desc) > 90:
-        desc = desc[:90] + "…"
+    """无 LLM 时的兜底：不编造功能，只用可核对的数据 + 中文方向提示。"""
+    desc = norm(repo.get("description"))
+    tag = rule_tag(repo)
+    bits = [repo.get("language") or "语言未标注"]
+    if repo.get("stars"):
+        bits.append(f"累计 {fmt_stars(repo['stars'])} star")
+    if repo.get("stars_today"):
+        bits.append(f"今日 +{repo['stars_today']}")
+    if repo.get("created"):
+        bits.append(f"仓库建于 {repo['created'][:10]}")
     return {
-        "tag": rule_tag(repo),
-        "summary": desc or "（仓库暂无描述）",
-        "why": "近几天在 GitHub 上快速升温的新项目，具体细节可以点开仓库看 README。",
+        "tag": tag,
+        "summary": desc or "仓库暂无描述",
+        "why": " · ".join(bits) + "。" + TAG_HINT[tag],
     }
 
 
@@ -251,8 +318,8 @@ SYSTEM_PROMPT = (
 
 def llm_notes(repos):
     """一次调用让模型给所有项目写中文解读；失败返回 None。"""
-    if not LLM_API_KEY:
-        print("没有可用的 LLM key，使用规则摘要兜底", file=sys.stderr)
+    if not (LLM_API_KEY and LLM_BASE_URL):
+        print("未配置 LLM_API_KEY / LLM_BASE_URL，使用中文数据版兜底", file=sys.stderr)
         return None
 
     payload_repos = [{
@@ -279,9 +346,9 @@ def llm_notes(repos):
 {json.dumps(payload_repos, ensure_ascii=False, indent=1)}
 """
 
-    # 模型名在不同时间点可能被下架，按顺序退让，避免整封邮件降级
+    # 模型名不同网关可能不一样，按顺序退让，避免整封邮件降级
     candidates = []
-    for m in (LLM_MODEL, "openai/gpt-4.1-mini", "openai/gpt-4o-mini", "gpt-4o-mini"):
+    for m in (LLM_MODEL, "deepseek-chat", "gpt-4o-mini"):
         if m and m not in candidates:
             candidates.append(m)
 
@@ -348,6 +415,9 @@ def render_md(repos, notes, ai_ok):
     lines = [f"# GitHub 趣项目日报 · {TODAY}", ""]
     lines.append(f"> 今日共 {len(repos)} 个新上榜项目，已剔除老牌常青树与近期重复推荐。")
     lines.append("> 每个项目标注了所属方向；只做推荐，不下载、不运行。")
+    if not ai_ok:
+        lines.append("> 说明：本轮未配置 LLM key，未生成 AI 中文解读，"
+                     "「一句话」沿用仓库原始英文描述，其余信息（方向、Star、语言）均由本地规则判定。")
     lines.append("")
 
     idx = 0
@@ -389,6 +459,8 @@ CSS = """
   .head h1{margin:0 0 6px;font-size:21px;letter-spacing:.3px;}
   .head p{margin:0;font-size:12px;color:#6b7280;line-height:1.7;}
   .grp{margin:26px 0 10px;font-size:13px;font-weight:700;color:#0b5cad;letter-spacing:1px;}
+  .notice{margin:14px 0 0;padding:10px 12px;background:#fff8e6;border:1px solid #f0e0b8;
+          border-radius:8px;font-size:12px;line-height:1.7;color:#8a6d1f;}
   .card{background:#fff;border:1px solid #e6e8eb;border-radius:12px;
         padding:14px 16px;margin:0 0 12px;}
   .t{font-size:15px;font-weight:650;margin:0 0 8px;line-height:1.5;}
@@ -414,6 +486,11 @@ def render_html(repos, notes, ai_ok):
         f"<p>今日 {len(repos)} 个新上榜项目 · 已剔除老牌常青树与近期重复推荐</p>",
         "</div>",
     ]
+    if not ai_ok:
+        parts.append(
+            "<div class='notice'>本轮未配置 LLM key，未生成 AI 中文解读："
+            "「一句话」为仓库原始英文描述，方向、Star、语言由本地规则判定。</div>"
+        )
     idx = 0
     for gi, (group, items) in enumerate(group_items(repos, notes)):
         num = CN_NUM[gi] if gi < len(CN_NUM) else str(gi + 1)

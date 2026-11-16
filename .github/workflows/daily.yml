@@ -39,6 +39,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SEND_AFTER_HOUR: "9"
           FORCE_SEND: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+          # 可选：配置了这三项就走真实 LLM 生成中文解读；不配则输出中文数据版
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
         run: python daily_digest.py --prepare
 
       # 先落盘归档再发信：归档推不上去就不发，避免「发了但没记录 → 每小时重发」。

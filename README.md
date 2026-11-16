@@ -1,17 +1,22 @@
 # GitHub 趣项目日报 ☁️
 
 一个跑在 **GitHub Actions 云端** 的定时任务：每天早上 9 点（北京时间）之后
-自动抓取新崛起的热门开源项目，用 AI 写成中文解读，整理成日报发到你的邮箱。
+自动抓取新崛起的热门开源项目，整理成中文日报发到你的邮箱。
 **你的电脑关不关机完全不影响。**
 
 ## 它做什么
 
 1. 抓 `github.com/trending` 日榜（带「今日 +N star」这个增长信号）+ GitHub Search API 近 7 天新建的高星仓库
-2. 自动过滤 nodejs/node 这类老牌常青项目，并跳过最近几天已经推荐过的仓库
-3. 调 **GitHub Models**（用仓库内置的 `GITHUB_TOKEN`，不需要另外买 API key）给每个项目写中文解读：
-   一句话说清它是什么，再补 2-3 句「为什么有意思」
+2. 自动过滤 nodejs/node 这类老牌常青项目（以及 star ≥ 5 万的巨无霸）、跳过最近推荐过的仓库
+   （历史清单见 `digests/history.txt`），同名克隆仓库只留一个
+3. 配了 LLM 就用它写「一句话 + 为什么有意思」的中文解读；**没配就输出中文数据版**
+   （方向、Star、语言、建仓时间等由本地规则判定，简介沿用仓库原始描述，并在抬头注明）
 4. 按 `AI / Agent`、`开发工具 / 效率`、`好玩 / 有趣` 三个方向分组排版
 5. 把日报发到你的邮箱，同时归档到仓库 `digests/`（`.md` 正文 + `.html` 排版版）
+
+> ⚠️ 早期版本用 **GitHub Models**（`models.github.ai`，声称用 `GITHUB_TOKEN` 免密钥调用）。
+> 实测该端点在 Actions 内只返回纯文本 `OK`、不产出任何内容，已于 2026-11-16 移除，
+> 改为「可选真实 LLM key + 中文数据版兜底」。
 
 
 ## 搭建步骤（只需做一次）
@@ -51,6 +56,18 @@ git push -u origin main
 | `SMTP_PASS` | 刚拿到的 16 位授权码 |
 | `TO_EMAIL` | 收件邮箱（填你常用的邮箱，可以是同一个 163，也可以是 QQ 等其他邮箱） |
 
+### 3.1（可选）接入 AI 中文解读
+
+不配也能跑，只是「一句话」会沿用仓库英文原文。想让每个项目都有中文解读，再加这 3 个 Secret：
+
+| Secret 名 | 值 |
+|---|---|
+| `LLM_BASE_URL` | OpenAI 兼容地址，如 `https://api.deepseek.com` 或 `https://api.siliconflow.cn/v1` |
+| `LLM_API_KEY` | 对应平台的 API key |
+| `LLM_MODEL` | 模型名，如 `deepseek-chat`（留空默认 `deepseek-chat`） |
+
+配好后可在 Actions 日志里看到 `LLM 生成了 N 条中文解读`。
+
 ### 4. 启用 Actions 并手动测试
 
 - 仓库 → **Actions** 标签页 → 如果提示 enable workflows，点启用
@@ -71,10 +88,11 @@ git push -u origin main
 
 - **9 点前收不到**：正常，这是有意设计的，别改 `SEND_AFTER_HOUR` 就行
 - **Actions 定时会有延迟**：GitHub 的 cron 不是秒级精确，晚十几分钟很常见
-- **收不到邮件**：先看 Actions 日志。若是 `LLM 全部不可用` 不影响发信（会降级成仓库原始描述）；
+- **收不到邮件**：先看 Actions 日志。`未配置 LLM_API_KEY` 不影响发信（走中文数据版）；
   若是 SMTP 报错，多半是授权码错了或没开 SMTP 服务
 - **想现在就要一封**：仓库 Actions → Run workflow，`force` 默认勾选，会忽略时间闸门立即发
 - **换了邮箱**：改 `TO_EMAIL` 这个 Secret 即可，不用改代码
+- **不想某项目再出现**：把 `owner/repo` 追加到 `digests/history.txt`
 - **Public 仓库的 Actions 免费不限量**；Private 仓库每月有 2000 分钟免费额度，本项目远用不完
 
 
@@ -87,6 +105,7 @@ git push -u origin main
 | `digests/YYYY-MM-DD.md` | 每天日报的 Markdown 归档（自动生成） |
 | `digests/YYYY-MM-DD.html` | 同一份日报的邮件排版版，可直接用浏览器打开 |
 | `digests/.sent-YYYY-MM-DD` | 当天已发送标记，用来防止重复发信 |
+| `digests/history.txt` | 手工维护的「已推荐过」清单，补上没走脚本归档的日报 |
 
 本地调试（不联网、不发信，只验证排版）：
 
