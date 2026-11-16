@@ -1,15 +1,21 @@
 name: GitHub Trending Daily Digest
 
+# 触发策略：每小时唤醒一次，但脚本内部有「北京时间 9 点前不发」的时间闸门，
+# 所以 0-8 点这几轮都是空跑，用来兜住 GitHub 定时任务偶尔丢失/大幅延迟的问题。
+# 只要 9 点后的任意一轮跑成功，当天就会发出一封，且当天不会重复发。
 on:
   schedule:
-    # 每小时的 0 分触发一次（UTC）。脚本内部有幂等保护：当天发过就跳过，
-    # 所以多次触发不会重复发邮件，但能有效对抗 GitHub 定时任务偶尔丢失/延迟的问题。
-    # 第一次实际发送通常落在 UTC 01:00 前后 = 北京时间 09:00 左右。
     - cron: "0 * * * *"
-  workflow_dispatch: {}   # 允许手动点按钮立即跑一次
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "忽略 9 点闸门、忽略当天已发送标记，立即生成并发送一封"
+        type: boolean
+        default: true
 
 permissions:
-  contents: write         # 用于把日报归档 commit 回仓库
+  contents: write   # 把日报归档 commit 回仓库
+  models: read      # 调用 GitHub Models 生成中文解读（用的是内置 GITHUB_TOKEN，不需要额外 key）
 
 concurrency:
   group: daily-digest
@@ -20,33 +26,68 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: 生成并发送日报
+      # 第一步：只生成，不发信。失败的话整轮结束，绝不会发出半成品。
+      - name: 生成日报（含中文解读）
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SEND_AFTER_HOUR: "9"
+          FORCE_SEND: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+        run: python daily_digest.py --prepare
+
+      # 先落盘归档再发信：归档推不上去就不发，避免「发了但没记录 → 每小时重发」。
+      - name: 归档并推送
+        run: |
+          git config user.name "digest-bot"
+          git config user.email "digest-bot@users.noreply.github.com"
+          git add -A digests/
+          if git diff --cached --quiet; then
+            echo "没有新归档，跳过提交"
+            exit 0
+          fi
+          git commit -m "日报归档 $(TZ=Asia/Shanghai date +%F)"
+          for i in 1 2 3; do
+            if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push; then
+              echo "归档已推送"
+              exit 0
+            fi
+            echo "推送失败，重试第 $i 次"
+            sleep 5
+          done
+          echo "::error::归档推送失败，本轮不发信"
+          exit 1
+
+      - name: 发送邮件
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           TO_EMAIL: ${{ secrets.TO_EMAIL }}
-        run: python daily_digest.py
+          SEND_AFTER_HOUR: "9"
+          FORCE_SEND: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+        run: python daily_digest.py --send
 
-      - name: 归档日报到仓库
+      # 发送标记（digests/.sent-YYYY-MM-DD）推上去，下一轮就会跳过，不再重复发。
+      - name: 记录发送标记
+        if: always()
         run: |
-          git config user.name "digest-bot"
-          git config user.email "digest-bot@users.noreply.github.com"
-          git add digests/
+          git add -A digests/
           if git diff --cached --quiet; then
-            echo "没有新归档，跳过提交"
             exit 0
           fi
-          git commit -m "日报归档 $(date +%F)"
-          # 并发/他人提交时先 rebase 再推，最多重试 3 次
+          git commit -m "发送标记 $(TZ=Asia/Shanghai date +%F)"
           for i in 1 2 3; do
-            git pull --rebase --autostash origin main && git push && break
-            echo "推送失败，重试第 $i 次"
+            if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push; then
+              exit 0
+            fi
             sleep 5
           done
+          echo "::warning::发送标记推送失败，下一轮可能会重复发送"
+          exit 0

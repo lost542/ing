@@ -1,15 +1,18 @@
 # GitHub 趣项目日报 ☁️
 
-一个跑在 **GitHub Actions 云端** 的定时任务：每天早上 9 点（北京时间）
-自动抓取近 7 天新崛起的热门开源项目，整理成中文日报发到你的邮箱。
+一个跑在 **GitHub Actions 云端** 的定时任务：每天早上 9 点（北京时间）之后
+自动抓取新崛起的热门开源项目，用 AI 写成中文解读，整理成日报发到你的邮箱。
 **你的电脑关不关机完全不影响。**
 
 ## 它做什么
 
-1. 调 GitHub 官方 Search API，找「7 天内创建、按 Star 排序」的新仓库（比 trending 榜更聚焦新项目）
-2. 自动过滤 nodejs/node 这类老牌常青项目，选出前 8 个
-3. 按关键词给每个项目打方向标签：`AI / Agent`、`开发工具 / 效率`、`好玩 / 有趣`
-4. 把日报发到你的邮箱（同时归档到仓库 `digests/` 目录，随时回看）
+1. 抓 `github.com/trending` 日榜（带「今日 +N star」这个增长信号）+ GitHub Search API 近 7 天新建的高星仓库
+2. 自动过滤 nodejs/node 这类老牌常青项目，并跳过最近几天已经推荐过的仓库
+3. 调 **GitHub Models**（用仓库内置的 `GITHUB_TOKEN`，不需要另外买 API key）给每个项目写中文解读：
+   一句话说清它是什么，再补 2-3 句「为什么有意思」
+4. 按 `AI / Agent`、`开发工具 / 效率`、`好玩 / 有趣` 三个方向分组排版
+5. 把日报发到你的邮箱，同时归档到仓库 `digests/`（`.md` 正文 + `.html` 排版版）
+
 
 ## 搭建步骤（只需做一次）
 
@@ -54,17 +57,39 @@ git push -u origin main
 - 左侧选 "GitHub Trending Daily Digest" → **Run workflow** → 手动跑一次
 - 绿色 ✅ 且邮箱收到日报 = 搭建成功，之后每天早上 9 点自动送达
 
+## 发送时机（重要）
+
+- cron 是 `0 * * * *`（每小时整点），**0-8 点这几轮会空跑**，因为脚本里有硬闸门：
+  北京时间 9 点之前一律不发。
+- 9 点之后第一轮真正跑成功的，就是当天那一封；之后每小时都会因为检测到
+  `digests/.sent-YYYY-MM-DD` 而跳过，**当天不会重复发**。
+- 顺序是「先归档并推送到仓库 → 再发信」。归档推不上去就不发，避免出现
+  「信发了但仓库没记录，下一小时又发一遍」的情况。
+- 所以实际到达时间大约在 **9:00-9:55** 之间，取决于 GitHub 定时器的排队情况。
+
 ## 常见问题
 
-- **Actions 定时会有几分钟延迟**：GitHub 的 cron 不是秒级精确，晚 5~30 分钟属正常
-- **收不到邮件**：先检查 Actions 运行日志里 SMTP 报错，多半是授权码错了或没开 SMTP 服务
-- **想让某天多发一次**：仓库 Actions 页面手动点 Run workflow 即可
-- **Public 仓库的 Actions 免费不限量**；Private 仓库每月有 2000 分钟免费额度，本项目每天跑一次远用不完
+- **9 点前收不到**：正常，这是有意设计的，别改 `SEND_AFTER_HOUR` 就行
+- **Actions 定时会有延迟**：GitHub 的 cron 不是秒级精确，晚十几分钟很常见
+- **收不到邮件**：先看 Actions 日志。若是 `LLM 全部不可用` 不影响发信（会降级成仓库原始描述）；
+  若是 SMTP 报错，多半是授权码错了或没开 SMTP 服务
+- **想现在就要一封**：仓库 Actions → Run workflow，`force` 默认勾选，会忽略时间闸门立即发
+- **换了邮箱**：改 `TO_EMAIL` 这个 Secret 即可，不用改代码
+- **Public 仓库的 Actions 免费不限量**；Private 仓库每月有 2000 分钟免费额度，本项目远用不完
+
 
 ## 文件说明
 
 | 文件 | 作用 |
 |---|---|
-| `daily_digest.py` | 核心脚本：抓数据 → 生成中文日报 → 发邮件 |
-| `.github/workflows/daily.yml` | GitHub Actions 定时任务定义（UTC 1:00 = 北京 9:00） |
-| `digests/` | 每天日报的 Markdown 归档（自动生成） |
+| `daily_digest.py` | 核心脚本：抓数据 → AI 写中文解读 → 渲染日报 → 发邮件 |
+| `.github/workflows/daily.yml` | 定时任务定义（每小时唤醒 + 脚本内 9 点闸门） |
+| `digests/YYYY-MM-DD.md` | 每天日报的 Markdown 归档（自动生成） |
+| `digests/YYYY-MM-DD.html` | 同一份日报的邮件排版版，可直接用浏览器打开 |
+| `digests/.sent-YYYY-MM-DD` | 当天已发送标记，用来防止重复发信 |
+
+本地调试（不联网、不发信，只验证排版）：
+
+```bash
+python daily_digest.py --demo
+```
